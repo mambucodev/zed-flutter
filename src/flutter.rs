@@ -1,6 +1,8 @@
 use zed_extension_api::{
-    self as zed, SlashCommand, SlashCommandArgumentCompletion, SlashCommandOutput,
-    SlashCommandOutputSection, Worktree,
+    self as zed,
+    http_client::{HttpMethod, HttpRequest, RedirectPolicy},
+    SlashCommand, SlashCommandArgumentCompletion, SlashCommandOutput, SlashCommandOutputSection,
+    Worktree,
 };
 
 struct FlutterExtension;
@@ -355,6 +357,180 @@ fn handle_new(args: &[String]) -> Result<SlashCommandOutput, String> {
     })
 }
 
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    let in_script = false;
+    let mut last_was_newline = false;
+
+    for c in html.chars() {
+        if c == '<' {
+            in_tag = true;
+            continue;
+        }
+        if in_tag {
+            if c == '>' {
+                in_tag = false;
+            }
+            continue;
+        }
+        if in_script {
+            continue;
+        }
+        if c == '\n' || c == '\r' {
+            if !last_was_newline {
+                result.push('\n');
+                last_was_newline = true;
+            }
+        } else if c.is_whitespace() {
+            if !result.ends_with(' ') && !last_was_newline {
+                result.push(' ');
+            }
+        } else {
+            result.push(c);
+            last_was_newline = false;
+        }
+    }
+    let _ = in_script; // suppress unused warning
+    result.trim().to_string()
+}
+
+fn try_fetch_docs(class_name: &str) -> Option<String> {
+    let libraries = ["widgets", "material", "cupertino", "painting", "rendering", "services", "animation"];
+
+    for lib in &libraries {
+        let url = format!(
+            "https://api.flutter.dev/flutter/{lib}/{class_name}-class.html"
+        );
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: url.clone(),
+            headers: vec![("User-Agent".to_string(), "zed-flutter-extension/0.1.0".to_string())],
+            body: None,
+            redirect_policy: RedirectPolicy::FollowAll,
+        };
+
+        if let Ok(response) = request.fetch() {
+            let body = String::from_utf8_lossy(&response.body);
+            // Check if we got a real page (not a 404 page)
+            if body.contains(&format!("{class_name} class")) || body.contains(&format!("<title>{class_name}")) {
+                // Extract the description section
+                let stripped = strip_html_tags(&body);
+
+                // Try to extract a useful excerpt (first ~2000 chars after class name mention)
+                if let Some(pos) = stripped.find(&format!("{class_name} class")) {
+                    let excerpt_start = pos;
+                    let excerpt_end = (excerpt_start + 2000).min(stripped.len());
+                    let excerpt = &stripped[excerpt_start..excerpt_end];
+
+                    return Some(format!(
+                        "# {class_name}\n\n**Source**: [api.flutter.dev]({url})\n**Library**: flutter/{lib}\n\n---\n\n{excerpt}\n\n---\n*Truncated. See full docs at the link above.*"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+const COMMON_WIDGETS: &[(&str, &str, &str)] = &[
+    ("Container", "widgets", "A convenience widget that combines common painting, positioning, and sizing widgets."),
+    ("Text", "widgets", "A run of text with a single style."),
+    ("Column", "widgets", "A widget that displays its children in a vertical array."),
+    ("Row", "widgets", "A widget that displays its children in a horizontal array."),
+    ("Stack", "widgets", "A widget that positions its children relative to the edges of its box."),
+    ("ListView", "widgets", "A scrollable list of widgets arranged linearly."),
+    ("GridView", "widgets", "A scrollable 2D array of widgets."),
+    ("Scaffold", "material", "Implements the basic Material Design visual layout structure."),
+    ("AppBar", "material", "A Material Design app bar with toolbar actions."),
+    ("MaterialApp", "material", "A convenience widget that wraps widgets commonly required for Material Design apps."),
+    ("ElevatedButton", "material", "A Material Design elevated button."),
+    ("TextButton", "material", "A Material Design text button."),
+    ("IconButton", "material", "A Material Design icon button."),
+    ("TextField", "material", "A Material Design text field for user input."),
+    ("Card", "material", "A Material Design card panel with rounded corners and elevation."),
+    ("Drawer", "material", "A Material Design panel that slides in from the edge of a Scaffold."),
+    ("BottomNavigationBar", "material", "A Material Design bottom navigation bar."),
+    ("FloatingActionButton", "material", "A Material Design floating action button."),
+    ("AlertDialog", "material", "A Material Design alert dialog."),
+    ("SnackBar", "material", "A Material Design snack bar that slides up from the bottom."),
+    ("TabBar", "material", "A Material Design tab bar widget."),
+    ("Padding", "widgets", "A widget that insets its child by the given padding."),
+    ("Center", "widgets", "A widget that centers its child."),
+    ("Expanded", "widgets", "A widget that expands a child of a Row, Column, or Flex."),
+    ("SizedBox", "widgets", "A box with a specified size."),
+    ("GestureDetector", "widgets", "A widget that detects gestures."),
+    ("SingleChildScrollView", "widgets", "A box in which a single widget can be scrolled."),
+    ("FutureBuilder", "widgets", "A widget that builds itself based on the latest snapshot of a Future."),
+    ("StreamBuilder", "widgets", "A widget that builds itself based on the latest snapshot of a Stream."),
+    ("Navigator", "widgets", "A widget that manages a set of child widgets with a stack discipline."),
+    ("Form", "widgets", "An optional container for grouping form fields."),
+    ("Image", "widgets", "A widget that displays an image."),
+    ("AnimatedContainer", "widgets", "An animated version of Container that gradually changes its values."),
+    ("Hero", "widgets", "A widget that marks its child as a candidate for hero animations."),
+    ("Opacity", "widgets", "A widget that makes its child partially transparent."),
+    ("Wrap", "widgets", "A widget that displays its children in multiple runs."),
+    ("CupertinoApp", "cupertino", "A convenience widget that wraps widgets commonly required for a Cupertino Design app."),
+    ("CupertinoNavigationBar", "cupertino", "An iOS-style navigation bar."),
+    ("CupertinoButton", "cupertino", "An iOS-style button."),
+];
+
+fn handle_docs(args: &[String]) -> Result<SlashCommandOutput, String> {
+    if args.is_empty() {
+        return Err("Usage: /flutter-docs <ClassName>. Example: /flutter-docs Container".to_string());
+    }
+
+    let class_name = &args[0];
+
+    // First check our built-in dictionary
+    if let Some((_, lib, desc)) = COMMON_WIDGETS.iter().find(|(name, _, _)| name == class_name) {
+        let url = format!("https://api.flutter.dev/flutter/{lib}/{class_name}-class.html");
+
+        // Try to fetch detailed docs from the web
+        let details = try_fetch_docs(class_name);
+
+        let text = if let Some(detailed) = details {
+            detailed
+        } else {
+            format!(
+                "# {class_name}\n\n**Library**: flutter/{lib}\n**Docs**: [{class_name} class]({url})\n\n{desc}"
+            )
+        };
+
+        return Ok(SlashCommandOutput {
+            sections: vec![SlashCommandOutputSection {
+                range: (0..text.len()).into(),
+                label: format!("Flutter Docs: {class_name}"),
+            }],
+            text,
+        });
+    }
+
+    // Not in dictionary — try fetching from the web
+    if let Some(text) = try_fetch_docs(class_name) {
+        return Ok(SlashCommandOutput {
+            sections: vec![SlashCommandOutputSection {
+                range: (0..text.len()).into(),
+                label: format!("Flutter Docs: {class_name}"),
+            }],
+            text,
+        });
+    }
+
+    // Fallback: provide search links
+    let text = format!(
+        "# {class_name}\n\nNo documentation found in common Flutter libraries.\n\n**Try these links:**\n- [Search api.flutter.dev](https://api.flutter.dev/flutter/search.html?q={class_name})\n- [Search pub.dev](https://pub.dev/packages?q={class_name})\n- [Search dart.dev](https://api.dart.dev/stable/dart-core/{class_name}-class.html)"
+    );
+
+    Ok(SlashCommandOutput {
+        sections: vec![SlashCommandOutputSection {
+            range: (0..text.len()).into(),
+            label: format!("Flutter Docs: {class_name}"),
+        }],
+        text,
+    })
+}
+
 fn handle_pubspec(worktree: &Worktree) -> Result<SlashCommandOutput, String> {
     let content = worktree
         .read_text_file("pubspec.yaml")
@@ -390,6 +566,14 @@ impl zed::Extension for FlutterExtension {
                     run_command: false,
                 })
                 .collect()),
+            "flutter-docs" => Ok(COMMON_WIDGETS
+                .iter()
+                .map(|(name, lib, desc)| SlashCommandArgumentCompletion {
+                    label: format!("{name} ({lib}) — {desc}"),
+                    new_text: name.to_string(),
+                    run_command: true,
+                })
+                .collect()),
             _ => Ok(vec![]),
         }
     }
@@ -410,6 +594,7 @@ impl zed::Extension for FlutterExtension {
                 handle_doctor(worktree)
             }
             "flutter-new" => handle_new(&args),
+            "flutter-docs" => handle_docs(&args),
             _ => Err(format!("Unknown command: {}", command.name)),
         }
     }

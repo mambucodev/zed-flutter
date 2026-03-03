@@ -17,3 +17,7 @@ requires_argument = false
 [slash_commands.flutter-new]
 description = "Generate Flutter boilerplate (stateless, stateful, provider, riverpod, bloc, freezed, test)"
 requires_argument = true
+
+[slash_commands.flutter-docs]
+description = "Look up Flutter API documentation for a widget or class"
+requires_argument = true
