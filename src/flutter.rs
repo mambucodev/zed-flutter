@@ -155,6 +155,206 @@ fn handle_doctor(worktree: &Worktree) -> Result<SlashCommandOutput, String> {
     })
 }
 
+const TEMPLATE_TYPES: &[(&str, &str)] = &[
+    ("stateless", "StatelessWidget"),
+    ("stateful", "StatefulWidget"),
+    ("provider", "ChangeNotifierProvider"),
+    ("riverpod", "Riverpod ConsumerWidget"),
+    ("bloc", "Cubit (BLoC pattern)"),
+    ("freezed", "Freezed data class"),
+    ("test", "Widget test"),
+];
+
+fn template_stateless(name: &str) -> String {
+    format!(
+        r#"import 'package:flutter/material.dart';
+
+class {name} extends StatelessWidget {{
+  const {name}({{super.key}});
+
+  @override
+  Widget build(BuildContext context) {{
+    return const Placeholder();
+  }}
+}}"#
+    )
+}
+
+fn template_stateful(name: &str) -> String {
+    format!(
+        r#"import 'package:flutter/material.dart';
+
+class {name} extends StatefulWidget {{
+  const {name}({{super.key}});
+
+  @override
+  State<{name}> createState() => _{name}State();
+}}
+
+class _{name}State extends State<{name}> {{
+  @override
+  Widget build(BuildContext context) {{
+    return const Placeholder();
+  }}
+}}"#
+    )
+}
+
+fn template_provider(name: &str) -> String {
+    format!(
+        r#"import 'package:flutter/foundation.dart';
+
+class {name} extends ChangeNotifier {{
+  // Add your state fields here
+
+  // Example:
+  // int _count = 0;
+  // int get count => _count;
+  //
+  // void increment() {{
+  //   _count++;
+  //   notifyListeners();
+  // }}
+}}"#
+    )
+}
+
+fn template_riverpod(name: &str) -> String {
+    format!(
+        r#"import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+class {name} extends ConsumerWidget {{
+  const {name}({{super.key}});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {{
+    return const Placeholder();
+  }}
+}}"#
+    )
+}
+
+fn template_bloc(name: &str) -> String {
+    format!(
+        r#"import 'package:flutter_bloc/flutter_bloc.dart';
+
+class {name}State {{
+  const {name}State();
+}}
+
+class {name}Cubit extends Cubit<{name}State> {{
+  {name}Cubit() : super(const {name}State());
+}}"#
+    )
+}
+
+fn template_freezed(name: &str) -> String {
+    let name_snake = to_snake_case(name);
+    format!(
+        r#"import 'package:freezed_annotation/freezed_annotation.dart';
+
+part '{name_snake}.freezed.dart';
+part '{name_snake}.g.dart';
+
+@freezed
+class {name} with _${name} {{
+  const factory {name}({{
+    // Add your fields here
+  }}) = _{name};
+
+  factory {name}.fromJson(Map<String, dynamic> json) => _${name}FromJson(json);
+}}"#
+    )
+}
+
+fn template_test(name: &str) -> String {
+    format!(
+        r#"import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {{
+  group('{name}', () {{
+    testWidgets('renders correctly', (tester) async {{
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Placeholder(), // Replace with your widget
+          ),
+        ),
+      );
+
+      // Add your assertions here
+    }});
+  }});
+}}"#
+    )
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_lowercase().next().unwrap_or(c));
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn handle_new(args: &[String]) -> Result<SlashCommandOutput, String> {
+    if args.is_empty() {
+        let mut help = String::from("# /flutter-new\n\nUsage: `/flutter-new <type> [ClassName]`\n\nAvailable types:\n\n");
+        for (key, desc) in TEMPLATE_TYPES {
+            help.push_str(&format!("- **{key}** — {desc}\n"));
+        }
+        help.push_str("\nExample: `/flutter-new stateless MyWidget`");
+        return Ok(SlashCommandOutput {
+            sections: vec![SlashCommandOutputSection {
+                range: (0..help.len()).into(),
+                label: "Flutter New — Help".to_string(),
+            }],
+            text: help,
+        });
+    }
+
+    let template_type = args[0].as_str();
+    let class_name = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        "MyWidget".to_string()
+    };
+
+    let code = match template_type {
+        "stateless" => template_stateless(&class_name),
+        "stateful" => template_stateful(&class_name),
+        "provider" => template_provider(&class_name),
+        "riverpod" => template_riverpod(&class_name),
+        "bloc" => template_bloc(&class_name),
+        "freezed" => template_freezed(&class_name),
+        "test" => template_test(&class_name),
+        _ => {
+            return Err(format!(
+                "Unknown template type: '{template_type}'. Available: stateless, stateful, provider, riverpod, bloc, freezed, test"
+            ))
+        }
+    };
+
+    let text = format!("```dart\n{code}\n```");
+
+    Ok(SlashCommandOutput {
+        sections: vec![SlashCommandOutputSection {
+            range: (0..text.len()).into(),
+            label: format!("Flutter New: {template_type} — {class_name}"),
+        }],
+        text,
+    })
+}
+
 fn handle_pubspec(worktree: &Worktree) -> Result<SlashCommandOutput, String> {
     let content = worktree
         .read_text_file("pubspec.yaml")
@@ -178,16 +378,26 @@ impl zed::Extension for FlutterExtension {
 
     fn complete_slash_command_argument(
         &self,
-        _command: SlashCommand,
+        command: SlashCommand,
         _args: Vec<String>,
     ) -> Result<Vec<SlashCommandArgumentCompletion>, String> {
-        Ok(vec![])
+        match command.name.as_str() {
+            "flutter-new" => Ok(TEMPLATE_TYPES
+                .iter()
+                .map(|(key, desc)| SlashCommandArgumentCompletion {
+                    label: format!("{key} — {desc}"),
+                    new_text: key.to_string(),
+                    run_command: false,
+                })
+                .collect()),
+            _ => Ok(vec![]),
+        }
     }
 
     fn run_slash_command(
         &self,
         command: SlashCommand,
-        _args: Vec<String>,
+        args: Vec<String>,
         worktree: Option<&Worktree>,
     ) -> Result<SlashCommandOutput, String> {
         match command.name.as_str() {
@@ -199,6 +409,7 @@ impl zed::Extension for FlutterExtension {
                 let worktree = worktree.ok_or("This command requires an open project")?;
                 handle_doctor(worktree)
             }
+            "flutter-new" => handle_new(&args),
             _ => Err(format!("Unknown command: {}", command.name)),
         }
     }

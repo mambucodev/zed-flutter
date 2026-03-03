@@ -13,3 +13,7 @@ requires_argument = false
 [slash_commands.flutter-doctor]
 description = "Analyze your Flutter project health and configuration"
 requires_argument = false
+
+[slash_commands.flutter-new]
+description = "Generate Flutter boilerplate (stateless, stateful, provider, riverpod, bloc, freezed, test)"
+requires_argument = true
