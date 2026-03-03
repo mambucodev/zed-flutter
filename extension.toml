@@ -5,3 +5,7 @@ version = "0.1.0"
 schema_version = 1
 authors = ["mambucodev"]
 repository = "https://github.com/mambucodev/zed-flutter"
+
+[slash_commands.flutter-pubspec]
+description = "Surface your pubspec.yaml as context for the AI assistant"
+requires_argument = false
