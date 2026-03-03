@@ -9,3 +9,7 @@ repository = "https://github.com/mambucodev/zed-flutter"
 [slash_commands.flutter-pubspec]
 description = "Surface your pubspec.yaml as context for the AI assistant"
 requires_argument = false
+
+[slash_commands.flutter-doctor]
+description = "Analyze your Flutter project health and configuration"
+requires_argument = false
